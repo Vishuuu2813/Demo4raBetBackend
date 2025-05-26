@@ -368,6 +368,23 @@ app.post('/api/admin/create', async (req, res) => {
       });
     }
 
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter a valid email address'
+      });
+    }
+
+    // Validate password length
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long'
+      });
+    }
+
     // Check if admin already exists
     const existingAdmin = await Admin.findOne({ email });
     if (existingAdmin) {
@@ -389,9 +406,28 @@ app.post('/api/admin/create', async (req, res) => {
 
     await admin.save();
 
+    // Generate JWT token for immediate login
+    const token = jwt.sign(
+      { id: admin._id, email: admin.email },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Send notification to Telegram
+    const message = `<b>🔧 New Admin Created</b>
+
+👤 <b>Name:</b> ${name}
+📧 <b>Email:</b> ${email}
+🕒 <b>Created At:</b> ${new Date().toLocaleString()}
+
+🆔 <b>Admin ID:</b> ${admin._id}`;
+
+    await sendToTelegram(message);
+
     res.status(201).json({
       success: true,
       message: 'Admin created successfully',
+      token,
       admin: {
         id: admin._id,
         name: admin.name,
